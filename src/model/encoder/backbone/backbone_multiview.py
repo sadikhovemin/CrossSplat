@@ -1,5 +1,6 @@
 import torch
 from einops import rearrange
+import torch.nn.functional as F
 
 from .unimatch.backbone import CNNEncoder
 from .multiview_transformer import MultiViewFeatureTransformer
@@ -33,6 +34,30 @@ def feature_add_position_list(features_list, attn_splits, feature_channels):
     return out_features_list
 
 
+class DINOFeatureExtractor(torch.nn.Module):
+    def __init__(self, device="cuda"):
+        super().__init__()
+        self.dino_model = torch.hub.load(
+            'facebookresearch/dinov2',
+            'dinov2_vitl14',
+            pretrained=True
+        ).to(device).eval()
+
+        for p in self.dino_model.parameters():
+            p.requires_grad = False
+
+        self.embed_dim = list(self.dino_model.parameters())[-1].shape[0]
+
+    def forward(self, images):
+        # images: (B, V, 3, H, W)
+        B, V, C, H, W = images.shape
+        x = rearrange(images, 'b v c h w -> (b v) c h w')
+        x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        with torch.no_grad():
+            emb = self.dino_model(x)  # (B*V, E)
+        return emb.view(B, V, -1)
+
+
 class BackboneMultiview(torch.nn.Module):
     """docstring for BackboneMultiview."""
 
@@ -49,6 +74,7 @@ class BackboneMultiview(torch.nn.Module):
         global_attn_fast=True,
         downscale_factor=8,
         use_epipolar_trans=False,
+        use_dino=True
     ):
         super(BackboneMultiview, self).__init__()
         self.feature_channels = feature_channels
@@ -57,11 +83,23 @@ class BackboneMultiview(torch.nn.Module):
         # Table B: w/ Epipolar Transformer
         self.use_epipolar_trans = use_epipolar_trans
 
+        self.use_dino = use_dino
+
         # NOTE: '0' here hack to get 1/4 features
         self.backbone = CNNEncoder(
             output_dim=feature_channels,
             num_output_scales=1 if downscale_factor == 8 else 0,
         )
+
+        if self.use_dino:
+            self.dino_handler = DINOFeatureExtractor(device="cuda")
+            dino_dim = self.dino_handler.embed_dim
+            self.dino_fuse_proj = torch.nn.Conv2d(
+                feature_channels + dino_dim,
+                feature_channels,
+                kernel_size=1,
+                bias=True
+            )
 
         self.transformer = MultiViewFeatureTransformer(
             num_layers=num_transformer_layers,
@@ -111,10 +149,23 @@ class BackboneMultiview(torch.nn.Module):
     ):
         ''' images: (B, N_Views, C, H, W), range [0, 1] '''
         # resolution low to high
-        features_list = self.extract_feature(
-            self.normalize_images(images))  # list of features
+        normed = self.normalize_images(images)
+        features_list = self.extract_feature(normed)  # list of features
 
         cur_features_list = [x[0] for x in features_list]
+
+        if self.use_dino:
+            dino_emb = self.dino_handler(normed)  # (B, V, E)
+            B, V, E = dino_emb.shape
+            _, C, Hf, Wf = cur_features_list[0].shape
+            dino_feats = dino_emb.view(B, V, E, 1, 1).expand(-1, -1, -1, Hf, Wf)
+
+            fused = []
+            for idx, feat in enumerate(cur_features_list):
+                df = dino_feats[:, idx]
+                cat = torch.cat([feat, df], dim=1)
+                fused.append(self.dino_fuse_proj(cat))
+            cur_features_list = fused
 
         if return_cnn_features:
             cnn_features = torch.stack(cur_features_list, dim=1)  # [B, V, C, H, W]

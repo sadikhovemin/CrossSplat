@@ -99,7 +99,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
                     }
                 )
                 # NOTE: when wo cross attn, we added ffns into self-attn, but they have no pretrained weight
-                is_strict_loading = not cfg.wo_backbone_cross_attn
+                is_strict_loading = not cfg.wo_backbone_cross_attn and not getattr(self.backbone, "use_dino", False)
                 self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
 
         # gaussians convertor
