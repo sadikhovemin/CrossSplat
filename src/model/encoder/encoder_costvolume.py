@@ -26,6 +26,29 @@ from .epipolar.epipolar_sampler import EpipolarSampler
 from ..encodings.positional_encoding import PositionalEncoding
 
 
+def save_depth_images(depths):
+    # depth shape is [1, 2, 65536, 1, 1] - 256*256
+    import os
+    import numpy as np
+    import imageio
+    import matplotlib.pyplot as plt
+
+    b, v, n, _, _ = depths.shape
+    h = w = int(n ** 0.5)
+    depths_reshaped = depths.squeeze(-1).squeeze(-1).view(b, v, h, w).detach().cpu().numpy()  # [1, 2, 256, 256]
+
+    for i in range(v):
+        depth = depths_reshaped[0, i]  # shape: [256, 256]
+
+        d_min, d_max = np.percentile(depth, 1), np.percentile(depth, 99)
+        depth_norm = (np.clip(depth, d_min, d_max) - d_min) / (d_max - d_min + 1e-8)
+        depth_uint8 = (depth_norm * 255).astype(np.uint8)
+
+        os.makedirs("depth_images", exist_ok=True)
+        imageio.imwrite(f"re10k_depth/depth_view_{i}.png", depth_uint8)
+
+
+
 @dataclass
 class OpacityMappingCfg:
     initial: float
@@ -186,6 +209,8 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             extra_info=extra_info,
             cnn_features=cnn_features,
         )
+
+        save_depth_images(depths)
 
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((h, w), device)
