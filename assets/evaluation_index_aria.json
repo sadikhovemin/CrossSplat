@@ -31,5 +31,16 @@
             5,
             6
         ]
+    },
+    "Lite_release_recognition_ChoppingBoard_seq031_61283_real": {
+        "context": [
+            1,
+            5
+        ],
+        "target": [
+            2,
+            3,
+            4
+        ]
     }
 }
