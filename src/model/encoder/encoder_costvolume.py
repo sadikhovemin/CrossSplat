@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional, List
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -24,6 +25,8 @@ from ...global_cfg import get_cfg
 
 from .epipolar.epipolar_sampler import EpipolarSampler
 from ..encodings.positional_encoding import PositionalEncoding
+
+from vggt.models.vggt import VGGT
 
 
 @dataclass
@@ -124,6 +127,9 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             wo_cost_volume_refine=cfg.wo_cost_volume_refine,
         )
 
+        self.vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
+        self.vggt_model.eval()
+
     def map_pdf_to_opacity(
         self,
         pdf: Float[Tensor, " *batch"],
@@ -169,13 +175,43 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             epipolar_kwargs=epipolar_kwargs,
         )
 
+        # Use VGGT for depth_map. VGGT uses patch_size=14
+        self.vggt_model.to(device)
+
+        imgs = context["image"].to(device)  # shape: [B, V, 3, H, W]
+        patch_size = 14
+        new_h = ((h + patch_size - 1) // patch_size) * patch_size
+        new_w = ((w + patch_size - 1) // patch_size) * patch_size
+        if (new_h, new_w) != (h, w):
+            imgs = F.interpolate(imgs.flatten(0, 1), size=(new_h, new_w), mode='bilinear', align_corners=False)
+            imgs = imgs.view(b, v, 3, new_h, new_w)
+            
+        # VGGT expects [N, C, H, W]
+        with torch.no_grad():
+            agg_tok, ps_idx = self.vggt_model.aggregator(imgs)
+            depth_map_flat, depth_conf_flat = self.vggt_model.depth_head(agg_tok, imgs, ps_idx)
+            
+        # Resize back to original resolution
+        depth_map_flat = depth_map_flat.view(b * v, 1, new_h, new_w)
+        depth_conf_flat = depth_conf_flat.view(b * v, 1, new_h, new_w)
+
+        depth_map_flat = F.interpolate(depth_map_flat, size=(h, w), mode='bilinear', align_corners=False)
+        depth_conf_flat = F.interpolate(depth_conf_flat, size=(h, w), mode='bilinear', align_corners=False)
+
+        depth_map = depth_map_flat.view(b, v, h, w)
+        depth_conf = depth_conf_flat.view(b, v, h, w)
+
+        # Final shapes for Gaussians: [b, v, H*W, 1, 1]
+        depths_vggt = rearrange(depth_map,  'b v hh ww -> b v (hh ww) 1 1')
+        densities_vggt = rearrange(depth_conf, 'b v hh ww -> b v (hh ww) 1 1')
+
         # Sample depths from the resulting features.
         in_feats = trans_features
         extra_info = {}
         extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
         extra_info["scene_names"] = scene_names
         gpp = self.cfg.gaussians_per_pixel
-        depths, densities, raw_gaussians = self.depth_predictor(
+        _, _, raw_gaussians = self.depth_predictor(
             in_feats,
             context["intrinsics"],
             context["extrinsics"],
@@ -203,8 +239,8 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             rearrange(context["extrinsics"], "b v i j -> b v () () () i j"),
             rearrange(context["intrinsics"], "b v i j -> b v () () () i j"),
             rearrange(xy_ray, "b v r srf xy -> b v r srf () xy"),
-            depths,
-            self.map_pdf_to_opacity(densities, global_step) / gpp,
+            depths_vggt,
+            self.map_pdf_to_opacity(densities_vggt, global_step) / gpp,
             rearrange(
                 gaussians[..., 2:],
                 "b v r srf c -> b v r srf () c",
@@ -215,7 +251,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         # Dump visualizations if needed.
         if visualization_dump is not None:
             visualization_dump["depth"] = rearrange(
-                depths, "b v (h w) srf s -> b v h w srf s", h=h, w=w
+                depths_vggt, "b v (h w) srf s -> b v h w srf s", h=h, w=w
             )
             visualization_dump["scales"] = rearrange(
                 gaussians.scales, "b v r srf spp xyz -> b (v r srf spp) xyz"
