@@ -41,6 +41,32 @@ from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 
+# def save_depth_debug(depth: torch.Tensor, global_step: int) -> None:
+#     import torchvision.utils as vutils
+#     from pathlib import Path
+#     """
+#     Saves depth map for debugging purposes to a hardcoded path.
+    
+#     Args:
+#         depth (torch.Tensor): Depth tensor of shape [1, H, W] or [H, W].
+#         global_step (int): Current global step for naming.
+#     """
+#     save_dir = Path("depth_images")
+#     save_dir.mkdir(parents=True, exist_ok=True)
+
+#     if depth.ndim == 5:
+#         depth = depth[0, 0, 0]
+#     if depth.ndim == 2:
+#         depth = depth.unsqueeze(0)  # Make it [1, H, W]
+
+#     depth_min = depth.min()
+#     depth_max = depth.max()
+#     depth_norm = (depth - depth_min) / (depth_max - depth_min + 1e-8)
+
+#     filename = save_dir / f"depth_step_{global_step:06d}.png"
+#     vutils.save_image(depth_norm, filename)
+#     print(f"[DEBUG] Depth image saved at {filename}")
+
 
 @dataclass
 class OptimizerCfg:
@@ -138,6 +164,8 @@ class ModelWrapper(LightningModule):
             depth_mode=self.train_cfg.depth_mode,
         )
         target_gt = batch["target"]["image"]
+
+        # save_depth_debug(batch["target"]["depth"], 400)
 
         # Compute metrics.
         psnr_probabilistic = compute_psnr(

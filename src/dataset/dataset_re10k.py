@@ -20,6 +20,31 @@ from .shims.crop_shim import apply_crop_shim
 from .types import Stage
 from .view_sampler import ViewSampler
 
+# def save_depth_debug(depth: torch.Tensor, global_step: int) -> None:
+#     import torchvision.utils as vutils
+#     from pathlib import Path
+#     """
+#     Saves depth map for debugging purposes to a hardcoded path.
+    
+#     Args:
+#         depth (torch.Tensor): Depth tensor of shape [1, H, W] or [H, W].
+#         global_step (int): Current global step for naming.
+#     """
+#     save_dir = Path("depth_images")
+#     save_dir.mkdir(parents=True, exist_ok=True)
+
+#     if depth.ndim == 2:
+#         depth = depth.unsqueeze(0)  # Make it [1, H, W]
+
+#     depth_min = depth.min()
+#     depth_max = depth.max()
+#     depth_norm = (depth - depth_min) / (depth_max - depth_min + 1e-8)
+
+#     filename = save_dir / f"depth_step_{global_step:06d}.png"
+#     vutils.save_image(depth_norm, filename)
+#     print(f"[DEBUG] Depth image saved at {filename}")
+
+
 
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
@@ -147,10 +172,23 @@ class DatasetRE10k(IterableDataset):
                     example["images"][index.item()] for index in context_indices
                 ]
                 context_images = self.convert_images(context_images)
+                context_depths = [
+                    example["depth"][index.item()] for index in context_indices
+                ]
+                context_depths = self.convert_depths(context_depths)
+
                 target_images = [
                     example["images"][index.item()] for index in target_indices
                 ]
                 target_images = self.convert_images(target_images)
+                target_depths = [
+                    example["depth"][index.item()] for index in target_indices
+                ]
+                target_depths = self.convert_depths(target_depths)
+
+
+                # save_depth_debug(target_depths, 20)
+
 
                 # Skip the example if the images don't have the right shape.
                 # context_image_invalid = context_images.shape[1:] != (3, 360, 640)
@@ -195,6 +233,7 @@ class DatasetRE10k(IterableDataset):
                         "extrinsics": extrinsics[context_indices],
                         "intrinsics": intrinsics[context_indices],
                         "image": context_images,
+                        "depth": context_depths,
                         "near": self.get_bound("near", len(context_indices)) / nf_scale,
                         "far": self.get_bound("far", len(context_indices)) / nf_scale,
                         "index": context_indices,
@@ -203,6 +242,7 @@ class DatasetRE10k(IterableDataset):
                         "extrinsics": extrinsics[target_indices],
                         "intrinsics": intrinsics[target_indices],
                         "image": target_images,
+                        "depth": target_depths,
                         "near": self.get_bound("near", len(target_indices)) / nf_scale,
                         "far": self.get_bound("far", len(target_indices)) / nf_scale,
                         "index": target_indices,
@@ -245,6 +285,18 @@ class DatasetRE10k(IterableDataset):
             image = Image.open(BytesIO(image.numpy().tobytes()))
             torch_images.append(self.to_tensor(image))
         return torch.stack(torch_images)
+    
+    def convert_depths(
+        self,
+        depths: list[UInt8[Tensor, "..."]],
+    ) -> Float[Tensor, "batch 1 height width"]:
+        torch_depths = []
+        for depth in depths:
+            depth_image = Image.open(BytesIO(depth.numpy().tobytes()))
+            depth_image = depth_image.transpose(Image.Transpose.ROTATE_270)
+            depth_tensor = self.to_tensor(depth_image)
+            torch_depths.append(depth_tensor)
+        return torch.stack(torch_depths)
 
     def get_bound(
         self,

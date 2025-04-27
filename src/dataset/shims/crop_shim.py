@@ -21,6 +21,19 @@ def rescale(
     image_new = torch.tensor(image_new, dtype=image.dtype, device=image.device)
     return rearrange(image_new, "h w c -> c h w")
 
+def rescale_depth(
+    depth: Float[Tensor, "1 h_in w_in"],
+    shape: tuple[int, int],
+) -> Float[Tensor, "1 h_out w_out"]:
+    h_out, w_out = shape
+    depth_np = depth.squeeze(0).detach().cpu().numpy()
+    depth_pil = Image.fromarray(depth_np.astype(np.float32), mode="F")
+    depth_pil_resized = depth_pil.resize((w_out, h_out), resample=Image.BILINEAR)
+    depth_resized_np = np.array(depth_pil_resized, dtype=np.float32)
+    depth_tensor = torch.tensor(depth_resized_np, dtype=depth.dtype, device=depth.device).unsqueeze(0)
+
+    return depth_tensor
+
 
 def center_crop(
     images: Float[Tensor, "*#batch c h w"],
@@ -74,12 +87,34 @@ def rescale_and_crop(
 
     return center_crop(images, intrinsics, shape)
 
+def rescale_and_crop_depth(
+    depths: Float[Tensor, "*#batch 1 h w"],
+    shape: tuple[int, int],
+) -> Float[Tensor, "*#batch 1 h_out w_out"]:
+    *batch, c, h_in, w_in = depths.shape
+    h_out, w_out = shape
+    assert h_out <= h_in and w_out <= w_in
+
+    scale_factor = max(h_out / h_in, w_out / w_in)
+    h_scaled = round(h_in * scale_factor)
+    w_scaled = round(w_in * scale_factor)
+    assert h_scaled == h_out or w_scaled == w_out
+
+    depths = depths.reshape(-1, c, h_in, w_in)
+    depths = torch.stack([
+        rescale_depth(depth, (h_scaled, w_scaled)) for depth in depths
+    ])
+    depths = depths.reshape(*batch, c, h_scaled, w_scaled)
+
+    return center_crop(depths, torch.eye(3).repeat(*batch, 1, 1), shape)[0]
+
 
 def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyViews:
     images, intrinsics = rescale_and_crop(views["image"], views["intrinsics"], shape)
     return {
         **views,
         "image": images,
+        "depth": rescale_and_crop_depth(views["depth"], shape),
         "intrinsics": intrinsics,
     }
 
