@@ -3,7 +3,7 @@
 defaults:
   - override /dataset: aria
   - override /model/encoder: costvolume
-  - override /loss: [mse, lpips, depth_mse]
+  - override /loss: [mse, lpips, depth_mae]
 
 wandb:
   name: aria
