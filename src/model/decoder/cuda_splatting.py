@@ -1,5 +1,5 @@
 from math import isqrt
-from typing import Literal
+from typing import Literal, Tuple
 
 import torch
 from diff_gaussian_rasterization import (
@@ -57,7 +57,7 @@ def render_cuda(
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     scale_invariant: bool = True,
     use_sh: bool = True,
-) -> Float[Tensor, "batch 3 height width"]:
+) -> Tuple[Float[Tensor, "batch 3 height width"], Float[Tensor, "batch 1 height width"]]:
     assert use_sh or gaussian_sh_coefficients.shape[-1] == 1
 
     # Make sure everything is in a range where numerical issues don't appear.
@@ -88,6 +88,7 @@ def render_cuda(
 
     all_images = []
     all_radii = []
+    all_depths = []
     for i in range(b):
         # Set up a tensor for the gradients of the screen-space means.
         mean_gradients = torch.zeros_like(gaussian_means[i], requires_grad=True)
@@ -114,7 +115,7 @@ def render_cuda(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, radii = rasterizer(
+        image, feature_map, alpha_mask, depth_map, radii = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
             shs=shs[i] if use_sh else None,
@@ -124,7 +125,9 @@ def render_cuda(
         )
         all_images.append(image)
         all_radii.append(radii)
-    return torch.stack(all_images)
+        all_depths.append(depth_map)
+
+    return torch.stack(all_images), torch.stack(all_depths)
 
 
 def render_cuda_orthographic(
@@ -207,7 +210,7 @@ def render_cuda_orthographic(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, radii = rasterizer(
+        image, feature_map, alpha_mask, depth_map, radii = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
             shs=shs[i] if use_sh else None,
@@ -252,7 +255,7 @@ def render_depth_cuda(
 
     # Render using depth as color.
     b, _ = fake_color.shape
-    result = render_cuda(
+    _, result = render_cuda(
         extrinsics,
         intrinsics,
         near,
@@ -267,3 +270,5 @@ def render_depth_cuda(
         use_sh=False,
     )
     return result.mean(dim=1)
+
+

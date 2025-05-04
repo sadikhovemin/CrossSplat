@@ -43,7 +43,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         depth_mode: DepthRenderingMode | None = None,
     ) -> DecoderOutput:
         b, v, _, _ = extrinsics.shape
-        color = render_cuda(
+        color, _ = render_cuda(
             rearrange(extrinsics, "b v i j -> (b v) i j"),
             rearrange(intrinsics, "b v i j -> (b v) i j"),
             rearrange(near, "b v -> (b v)"),
